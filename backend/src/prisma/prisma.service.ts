@@ -77,6 +77,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     await this._client.$disconnect();
   }
 
+  get $transaction() { return this._client.$transaction.bind(this._client); }
   get users() { return this._client.users; }
   get roles() { return this._client.roles; }
   get user_roles() { return this._client.user_roles; }

@@ -17,6 +17,10 @@ import {
   LogoutRounded,
   PersonRounded,
   LocalHospitalRounded,
+<<<<<<< HEAD
+=======
+  CalendarMonthRounded,
+>>>>>>> f0ef2d6 (first upload)
 } from '@mui/icons-material';
 import api from '@/lib/api';
 
@@ -137,7 +141,37 @@ export default function ProfilePage() {
               value={profile?.is_active ? '✅ ใช้งานอยู่' : '❌ ปิดใช้งาน'}
             />
           </Box>
+<<<<<<< HEAD
 
+=======
+          {/* 👇 เพิ่มปุ่มจัดการนัดหมาย (สีเขียว) ตรงนี้ 👇 */}
+          <Button
+            variant="contained"
+            fullWidth
+            size="large"
+            onClick={() => {
+              if (profile?.user_type === 'parent') {
+                router.push('/appointments/parent'); // ไปหน้าของผู้ปกครอง
+              } else {
+                router.push('/appointments/staff'); // ไปหน้าของเจ้าหน้าที่ (ถ้ามี)
+              }
+            }}
+            startIcon={<CalendarMonthRounded />}
+            sx={{
+              py: 1.5,
+              mb: 2, // เว้นระยะห่างจากปุ่มออกจากระบบด้านล่าง
+              background: 'linear-gradient(135deg, #00C853 0%, #00E676 100%)', // โทนสีเขียว
+              boxShadow: '0 4px 20px rgba(0,200,83,0.3)',
+              '&:hover': {
+                background: 'linear-gradient(135deg, #00E676 0%, #69F0AE 100%)',
+                boxShadow: '0 6px 28px rgba(0,200,83,0.45)',
+              },
+            }}
+          >
+            จัดการนัดหมาย
+          </Button>
+          {/* 👆 สิ้นสุดปุ่มใหม่ 👆 */}
+>>>>>>> f0ef2d6 (first upload)
           <Button
             variant="contained"
             fullWidth

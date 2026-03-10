@@ -18,9 +18,12 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    let invitedRole = 'admin'; 
+
+    let invitedRole = 'admin'; // หรือเปลี่ยนเป็น 'nurse' ตามที่ต้องการให้เป็นค่าเริ่มต้น
+    
     if (dto.userType === 'staff') {
-      if (!dto.inviteToken) {
+      // --- เริ่มคอมเมนต์ส่วนนี้ ---
+      /* if (!dto.inviteToken) {
         throw new UnauthorizedException('An invite token is required to register as staff');
       }
       try {
@@ -32,6 +35,11 @@ export class AuthService {
       } catch (err) {
         throw new UnauthorizedException('Invalid or expired invite token');
       }
+      */
+      // --- จบคอมเมนต์ ---
+
+      // เพิ่มบรรทัดนี้เพื่อกำหนด Role เริ่มต้นให้เจ้าหน้าที่ที่สมัครแบบไม่มี Token
+      invitedRole = 'nurse'; 
     }
 
     const existing = await this.prisma.users.findUnique({
