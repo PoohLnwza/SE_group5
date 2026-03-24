@@ -1,118 +1,138 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { 
-  Container, Typography, Box, Card, CardContent, 
-  Button, Chip, CircularProgress, Alert 
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Typography,
 } from '@mui/material';
-import api from '@/lib/api'; // 👈 1. Import api มาใช้งาน
+import { AppShell, DashboardCard } from '@/app/components/app-shell';
+import { parentNav } from '@/app/components/navigation';
+import api from '@/lib/api';
+import type { Profile } from '@/lib/access';
+import { formatDate, formatTime, titleCase } from '@/lib/format';
+
+type Schedule = {
+  schedule_id: number;
+  work_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  slot_status: string | null;
+  staff: {
+    first_name: string | null;
+    last_name: string | null;
+    role: string | null;
+  } | null;
+};
 
 export default function ParentAppointmentsPage() {
   const router = useRouter();
-  const [schedules, setSchedules] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
- useEffect(() => {
+  useEffect(() => {
     const fetchSchedules = async () => {
       setLoading(true);
       setError('');
+
       try {
-        const res = await api.get('/appointments/schedules');
-        
-        // 👈 เพิ่ม Console.log เพื่อดูว่า Backend ส่งอะไรมา
-        console.log('ข้อมูลจาก Backend:', res); 
-
-        // 👈 เช็คว่าข้อมูลอยู่ใน .data (Axios) หรือเป็น Array ตรงๆ (Fetch)
-        const schedulesData = res.data ? res.data : res; 
-        
-        if (Array.isArray(schedulesData)) {
-           setSchedules(schedulesData);
-        } else {
-           // กรณี Backend ส่งกลับมาเป็น Format อื่น
-           setSchedules(schedulesData?.data || []); 
-        }
-
+        const [{ data: profileData }, { data }] = await Promise.all([
+          api.get<Profile>('/auth/profile'),
+          api.get<Schedule[]>('/appointments/schedules'),
+        ]);
+        setProfile(profileData);
+        setSchedules(data);
       } catch (err: any) {
-        const msg = err?.response?.data?.message || err.message || 'ไม่สามารถดึงข้อมูลตารางแพทย์ได้';
-        setError(msg);
-        
+        const message = err?.response?.data?.message || 'Unable to load schedules';
+        setError(Array.isArray(message) ? message.join(', ') : message);
+
         if (err?.response?.status === 401) {
-            router.push('/login');
+          router.push('/login');
         }
       } finally {
         setLoading(false);
       }
     };
+
     fetchSchedules();
   }, [router]);
 
-  // ฟังก์ชันแปลงวันที่ให้อ่านง่าย
-  const formatDateTime = (dateString: string) => {
-    if (!dateString) return '-';
-    return new Date(dateString).toLocaleDateString('th-TH', {
-      year: 'numeric', month: 'long', day: 'numeric',
-      hour: '2-digit', minute: '2-digit'
-    });
-  };
-
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" color="primary">
-          ตารางคิวแพทย์ที่ว่าง
-        </Typography>
-        <Button variant="outlined" onClick={() => router.push('/appointments/parent/history')}>
-          ดูประวัตินัดหมายของฉัน
-        </Button>
-      </Box>
-
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+    <AppShell
+      title="Appointment Booking"
+      subtitle="Choose a specialist and time slot from the available clinic schedule."
+      navTitle="Guardian Care"
+      navItems={parentNav()}
+      badge="Parent"
+      profileName={profile?.username}
+      profileMeta="Booking workspace"
+      actions={
+        <>
+          <Button variant="outlined" onClick={() => router.push('/dashboard/parent')}>
+            Back to dashboard
+          </Button>
+          <Button variant="contained" onClick={() => router.push('/appointments/parent/history')}>
+            Appointment history
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
 
       {loading ? (
-        <Box display="flex" justifyContent="center" my={5}><CircularProgress /></Box>
+        <Box display="grid" minHeight={320} sx={{ placeItems: 'center' }}>
+          <CircularProgress />
+        </Box>
       ) : (
-        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 3 }}>
+        <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: 'repeat(2, 1fr)', xl: 'repeat(3, 1fr)' }} gap={2.5}>
           {schedules.length === 0 ? (
-            <Box sx={{ gridColumn: '1 / -1' }}>
-              <Typography color="text.secondary">ไม่มีคิวแพทย์ที่ว่างในขณะนี้</Typography>
-            </Box>
+            <DashboardCard sx={{ gridColumn: '1 / -1' }}>
+              <Typography variant="h5">No slots available</Typography>
+              <Typography color="text.secondary" sx={{ mt: 1 }}>
+                Staff have not published appointment schedules yet.
+              </Typography>
+            </DashboardCard>
           ) : (
             schedules.map((schedule) => (
-              <Box key={schedule.schedule_id}>
-                <Card sx={{ 
-                  transition: '0.3s', 
-                  '&:hover': { boxShadow: '0 8px 24px rgba(124,77,255,0.15)', transform: 'translateY(-4px)' } 
-                }}>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>
-                      แพทย์: {schedule.staff?.first_name} {schedule.staff?.last_name}
+              <DashboardCard key={schedule.schedule_id}>
+                <Box display="flex" justifyContent="space-between" gap={2} alignItems="flex-start">
+                  <Box>
+                    <Typography variant="h6">
+                      {schedule.staff?.first_name || '-'} {schedule.staff?.last_name || ''}
                     </Typography>
-                    <Typography color="text.secondary" sx={{ mb: 1 }}>
-                      วันที่: {formatDateTime(schedule.work_date)}
+                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                      {formatDate(schedule.work_date)}
                     </Typography>
-                    <Typography color="text.secondary" sx={{ mb: 2 }}>
-                      สถานะ: <Chip label="ว่าง" color="success" size="small" />
-                    </Typography>
-                    <Button 
-                      variant="contained" 
-                      color="primary" 
-                      fullWidth
-                      onClick={() => router.push(`/appointments/parent/book/${schedule.schedule_id}`)}
-                      sx={{
-                        background: 'linear-gradient(135deg, #7C4DFF 0%, #448AFF 100%)',
-                      }}
-                    >
-                      เลือกคิวนี้
-                    </Button>
-                  </CardContent>
-                </Card>
-              </Box>
+                  </Box>
+                  <Chip label={titleCase(schedule.staff?.role)} size="small" />
+                </Box>
+
+                <Typography color="text.secondary" sx={{ mt: 2 }}>
+                  Time: {formatTime(schedule.start_time)} - {formatTime(schedule.end_time)}
+                </Typography>
+                <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                  Slot status: {titleCase(schedule.slot_status)}
+                </Typography>
+
+                <Button
+                  variant="contained"
+                  fullWidth
+                  sx={{ mt: 3 }}
+                  onClick={() => router.push(`/appointments/parent/book/${schedule.schedule_id}`)}
+                >
+                  Select this slot
+                </Button>
+              </DashboardCard>
             ))
           )}
         </Box>
       )}
-    </Container>
+    </AppShell>
   );
 }

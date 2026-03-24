@@ -1,5 +1,11 @@
 import type { Metadata } from 'next';
+import { Plus_Jakarta_Sans } from 'next/font/google';
 import Providers from './providers';
+
+const plusJakartaSans = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+});
 
 export const metadata: Metadata = {
   title: 'ADHD Clinic',
@@ -13,13 +19,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="th">
-      <head>
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
-        />
-      </head>
-      <body style={{ margin: 0 }}>
+      <body className={plusJakartaSans.className} style={{ margin: 0 }}>
         <Providers>{children}</Providers>
       </body>
     </html>

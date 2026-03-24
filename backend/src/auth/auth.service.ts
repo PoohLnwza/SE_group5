@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -8,38 +9,20 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ResetPasswordSimpleDto } from './dto/reset-password-simple.dto';
 
 @Injectable()
 export class AuthService {
-  
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
   ) {}
 
   async register(dto: RegisterDto) {
-
-    let invitedRole = 'admin'; // หรือเปลี่ยนเป็น 'nurse' ตามที่ต้องการให้เป็นค่าเริ่มต้น
-    
-    if (dto.userType === 'staff') {
-      // --- เริ่มคอมเมนต์ส่วนนี้ ---
-      /* if (!dto.inviteToken) {
-        throw new UnauthorizedException('An invite token is required to register as staff');
-      }
-      try {
-        const payload = this.jwtService.verify(dto.inviteToken);
-        if (payload.purpose !== 'staff-invite') {
-          throw new UnauthorizedException('Invalid token purpose');
-        }
-        invitedRole = payload.role || 'nurse'; 
-      } catch (err) {
-        throw new UnauthorizedException('Invalid or expired invite token');
-      }
-      */
-      // --- จบคอมเมนต์ ---
-
-      // เพิ่มบรรทัดนี้เพื่อกำหนด Role เริ่มต้นให้เจ้าหน้าที่ที่สมัครแบบไม่มี Token
-      invitedRole = 'nurse'; 
+    if (dto.userType !== 'parent') {
+      throw new BadRequestException(
+        'Self-registration is only available for parent accounts',
+      );
     }
 
     const existing = await this.prisma.users.findUnique({
@@ -60,38 +43,23 @@ export class AuthService {
       },
     });
 
-    if (dto.userType === 'staff') {
-      try {
-        // Find existing role or create it
-        let role = await this.prisma.roles.findUnique({
-          where: { role_name: invitedRole },
-        });
-        if (!role) {
-          role = await this.prisma.roles.create({
-            data: { role_name: invitedRole },
-          });
-        }
-        
-        await this.prisma.staff.create({
-          data: {
-            first_name: 'New',
-            last_name: 'Staff',
-            role: invitedRole as any,
-            status: 'active',
-            user_id: user.user_id,
-          },
-        });
+    const parentRole = await this.ensureRole('parent');
 
-        await this.prisma.user_roles.create({
-          data: {
-            user_id: user.user_id,
-            role_id: role.role_id,
-          },
-        });
-      } catch (staffErr) {
-        console.error('Error creating staff relations:', staffErr);
-      }
-    }
+    await this.prisma.parent.create({
+      data: {
+        first_name: 'New',
+        last_name: 'Parent',
+        phone: '',
+        user_id: user.user_id,
+      },
+    });
+
+    await this.prisma.user_roles.create({
+      data: {
+        user_id: user.user_id,
+        role_id: parentRole.role_id,
+      },
+    });
 
     const payload = {
       sub: user.user_id,
@@ -146,6 +114,30 @@ export class AuthService {
     };
   }
 
+  async resetPasswordSimple(dto: ResetPasswordSimpleDto) {
+    const user = await this.prisma.users.findUnique({
+      where: { username: dto.username },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Username not found');
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(dto.newPassword, salt);
+
+    await this.prisma.users.update({
+      where: { user_id: user.user_id },
+      data: {
+        password_hash: passwordHash,
+      },
+    });
+
+    return {
+      message: 'Password updated successfully',
+      username: user.username,
+    };
+  }
 
   async validateUserById(userId: number) {
     const user = await this.prisma.users.findUnique({
@@ -156,11 +148,42 @@ export class AuthService {
         user_type: true,
         is_active: true,
         staff: true,
+        user_roles: {
+          include: {
+            roles: {
+              select: {
+                role_name: true,
+              },
+            },
+          },
+        },
       },
     });
     if (!user || !user.is_active) return null;
 
-    const staffRole = user.staff && user.staff.length > 0 ? user.staff[0].role : null;
-    return { ...user, staffRole };
+    const staffRole =
+      user.staff && user.staff.length > 0
+        ? this.toPublicRoleName(user.staff[0].role)
+        : null;
+    const roleNames = user.user_roles.map((item) =>
+      this.toPublicRoleName(item.roles.role_name),
+    );
+    return { ...user, staffRole, roleNames };
+  }
+
+  private async ensureRole(roleName: string) {
+    return this.prisma.roles.upsert({
+      where: { role_name: roleName },
+      update: {},
+      create: { role_name: roleName },
+    });
+  }
+
+  private toPublicRoleName(roleName?: string | null) {
+    if (!roleName) {
+      return null;
+    }
+
+    return roleName === 'psychiatrist' ? 'doctor' : roleName;
   }
 }

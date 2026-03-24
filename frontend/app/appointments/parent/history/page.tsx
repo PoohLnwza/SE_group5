@@ -1,31 +1,65 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { 
-  Container, Typography, Box, Card, CardContent, 
-  Button, Chip, CircularProgress, Alert 
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Stack,
+  Typography,
 } from '@mui/material';
-import api from '@/lib/api'; // 👈 1. นำเข้า api
+import { AppShell, DashboardCard, StatCard } from '@/app/components/app-shell';
+import { parentNav } from '@/app/components/navigation';
+import api from '@/lib/api';
+import type { Profile } from '@/lib/access';
+import { formatDate, formatTime, titleCase } from '@/lib/format';
+
+type Appointment = {
+  appointment_id: number;
+  status: string | null;
+  child: {
+    first_name: string | null;
+    last_name: string | null;
+  } | null;
+  work_schedules: {
+    work_date: string | null;
+    start_time: string | null;
+    end_time: string | null;
+    staff: {
+      first_name: string | null;
+      last_name: string | null;
+      role: string | null;
+    } | null;
+  } | null;
+  room: {
+    room_name: string | null;
+  } | null;
+};
 
 export default function AppointmentHistoryPage() {
   const router = useRouter();
-  const [appointments, setAppointments] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // 💡 หมายเหตุ: ฝั่ง Backend (Service) ของคุณเขียนให้ดึงตามสิทธิ์อยู่แล้ว 
-  // ถ้าเป็น Parent จะดึงเฉพาะของลูกคนนั้นๆ มาให้เอง
   const fetchAppointments = async () => {
     setLoading(true);
     setError('');
+
     try {
-      // 👈 2. ใช้ api.get (ไม่ต้องใส่ Token เองแล้ว)
-      const { data } = await api.get('/appointments');
+      const [{ data: profileData }, { data }] = await Promise.all([
+        api.get<Profile>('/auth/profile'),
+        api.get<Appointment[]>('/appointments'),
+      ]);
+      setProfile(profileData);
       setAppointments(data);
     } catch (err: any) {
-      const msg = err?.response?.data?.message || 'ไม่สามารถดึงข้อมูลนัดหมายได้';
-      setError(msg);
+      const message = err?.response?.data?.message || 'Unable to load appointment history';
+      setError(Array.isArray(message) ? message.join(', ') : message);
     } finally {
       setLoading(false);
     }
@@ -36,84 +70,96 @@ export default function AppointmentHistoryPage() {
   }, []);
 
   const handleCancelAppointment = async (appointmentId: number) => {
-    if (!confirm('คุณแน่ใจหรือไม่ว่าต้องการยกเลิกนัดหมายนี้?')) return;
+    if (!window.confirm('Cancel this appointment?')) {
+      return;
+    }
 
     try {
-      // 👈 3. ใช้ api.patch ให้ตรงกับ Backend
       await api.patch(`/appointments/${appointmentId}/cancel`);
-      
-      alert('ยกเลิกนัดหมายสำเร็จ!');
-      fetchAppointments(); 
+      fetchAppointments();
     } catch (err: any) {
-      const msg = err?.response?.data?.message || 'ไม่สามารถยกเลิกนัดหมายได้';
-      alert(msg);
+      const message = err?.response?.data?.message || 'Unable to cancel appointment';
+      window.alert(Array.isArray(message) ? message.join(', ') : message);
     }
   };
 
-  const formatDateTime = (dateString: string) => {
-    if (!dateString) return '-';
-    return new Date(dateString).toLocaleDateString('th-TH', {
-      year: 'numeric', month: 'long', day: 'numeric',
-      hour: '2-digit', minute: '2-digit'
-    });
-  };
-
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
-        <Typography variant="h4" color="primary" sx={{ fontWeight: 'bold' }}>
-          🩺 ประวัตินัดหมายของฉัน
-        </Typography>
-        <Button variant="contained" onClick={() => router.push('/appointments/parent')}>
-          + จองคิวใหม่
-        </Button>
+    <AppShell
+      title="Appointment History"
+      subtitle="Track booked visits, room details, and status changes for each child."
+      navTitle="Guardian Care"
+      navItems={parentNav()}
+      badge="Parent"
+      profileName={profile?.username}
+      profileMeta="Appointment records"
+      actions={
+        <>
+          <Button variant="outlined" onClick={() => router.push('/dashboard/parent')}>
+            Dashboard
+          </Button>
+          <Button variant="contained" onClick={() => router.push('/appointments/parent')}>
+            Book new appointment
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+
+      <Box display="grid" gridTemplateColumns={{ xs: '1fr', md: 'repeat(3, 1fr)' }} gap={2} mb={3}>
+        <StatCard label="Total records" value={appointments.length} />
+        <StatCard label="Active" value={appointments.filter((item) => item.status !== 'cancelled').length} />
+        <StatCard label="Cancelled" value={appointments.filter((item) => item.status === 'cancelled').length} />
       </Box>
 
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-
       {loading ? (
-        <Box display="flex" justifyContent="center" my={5}><CircularProgress /></Box>
+        <Box display="grid" minHeight={320} sx={{ placeItems: 'center' }}>
+          <CircularProgress />
+        </Box>
       ) : (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Stack spacing={2.5}>
           {appointments.length === 0 ? (
-            <Typography color="text.secondary" textAlign="center">คุณยังไม่มีประวัติการนัดหมาย</Typography>
+            <DashboardCard>
+              <Typography variant="h5">No history yet</Typography>
+              <Typography color="text.secondary" sx={{ mt: 1 }}>
+                Once appointments are booked, they will appear here.
+              </Typography>
+            </DashboardCard>
           ) : (
-            appointments.map((appt) => (
-              <Card key={appt.appointment_id} sx={{ 
-                borderLeft: appt.status === 'cancelled' ? '6px solid #f44336' : '6px solid #4caf50',
-                opacity: appt.status === 'cancelled' ? 0.7 : 1
-              }}>
-                <CardContent sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            appointments.map((appointment) => (
+              <DashboardCard key={appointment.appointment_id}>
+                <Box display="flex" justifyContent="space-between" gap={2} flexWrap="wrap">
                   <Box>
                     <Typography variant="h6">
-                      แพทย์: {appt.work_schedules?.staff?.first_name} {appt.work_schedules?.staff?.last_name}
+                      {appointment.child?.first_name || '-'} {appointment.child?.last_name || ''}
                     </Typography>
-                    <Typography color="text.secondary">
-                      📅 วันที่: {formatDateTime(appt.work_schedules?.work_date)}
+                    <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                      Specialist: {appointment.work_schedules?.staff?.first_name || '-'} {appointment.work_schedules?.staff?.last_name || ''}
                     </Typography>
-                    <Box sx={{ mt: 1 }}>
-                      <Chip 
-                        label={appt.status === 'cancelled' ? 'ยกเลิกแล้ว' : 'นัดหมายสำเร็จ'} 
-                        color={appt.status === 'cancelled' ? 'error' : 'success'} 
-                        size="small" 
-                      />
-                    </Box>
+                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                      Date: {formatDate(appointment.work_schedules?.work_date || null)}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                      Time: {formatTime(appointment.work_schedules?.start_time || null)} - {formatTime(appointment.work_schedules?.end_time || null)}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                      Room: {appointment.room?.room_name || '-'}
+                    </Typography>
                   </Box>
-                  {appt.status !== 'cancelled' && (
-                    <Button 
-                      variant="outlined" 
-                      color="error"
-                      onClick={() => handleCancelAppointment(appt.appointment_id)}
-                    >
-                      ยกเลิกนัด
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
+
+                  <Stack alignItems={{ xs: 'flex-start', sm: 'flex-end' }} spacing={1.25}>
+                    <Chip label={titleCase(appointment.status)} color={appointment.status === 'cancelled' ? 'error' : 'success'} />
+                    {appointment.status !== 'cancelled' && (
+                      <Button variant="outlined" color="error" onClick={() => handleCancelAppointment(appointment.appointment_id)}>
+                        Cancel appointment
+                      </Button>
+                    )}
+                  </Stack>
+                </Box>
+              </DashboardCard>
             ))
           )}
-        </Box>
+        </Stack>
       )}
-    </Container>
+    </AppShell>
   );
 }
