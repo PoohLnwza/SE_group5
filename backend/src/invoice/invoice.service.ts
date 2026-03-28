@@ -77,6 +77,7 @@ export class InvoiceService {
       invoice_id: invoice.invoice_id,
       visit_id: invoice.visit_id,
       total_amount: invoice.total_amount,
+      status: invoice.status,
       items: invoice.invoice_item.map((item) => ({
         invoice_item_id: item.invoice_item_id,
         item_type: item.item_type,
@@ -132,17 +133,13 @@ export class InvoiceService {
       },
     });
 
-    if (!invoice && prescriptionItems.length > 0) {
+    if (!invoice) {
       invoice = await tx.invoice.create({
         data: {
           visit_id: visitId,
           total_amount: new Prisma.Decimal(0),
         },
       });
-    }
-
-    if (!invoice) {
-      throw new NotFoundException('Invoice not found for this visit');
     }
 
     await tx.invoice_item.deleteMany({
