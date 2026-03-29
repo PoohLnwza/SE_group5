@@ -53,8 +53,12 @@ export class InvoiceService {
       throw new BadRequestException('Prescription has no items to invoice');
     }
 
-    return this.prisma.$transaction((tx) =>
-      this.syncInvoiceForVisitTx(tx, prescription.visit_id!),
+    return this.prisma.$transaction(
+      (tx) => this.syncInvoiceForVisitTx(tx, prescription.visit_id!),
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      },
     );
   }
 
@@ -106,8 +110,17 @@ export class InvoiceService {
     };
   }
 
-  async syncInvoiceForVisit(visitId: number) {
-    return this.prisma.$transaction((tx) => this.syncInvoiceForVisitTx(tx, visitId));
+  async syncInvoiceForVisit(
+    visitId: number,
+    serviceItems?: ServiceItemInput[],
+  ) {
+    return this.prisma.$transaction(
+      (tx) => this.syncInvoiceForVisitTx(tx, visitId, serviceItems),
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      },
+    );
   }
 
   ensureServicePriceManager(user: AuthUser) {

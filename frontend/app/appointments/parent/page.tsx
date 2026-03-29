@@ -590,7 +590,8 @@ function getSchedulesForDay(schedules: Schedule[], day: Date) {
 
 function getHourLabel(value: string | null) {
   if (!value) return '';
-  return `${String(value).slice(0, 2)}:00`;
+  const time = formatTime(value);
+  return time === '-' ? '' : `${time.slice(0, 2)}:00`;
 }
 
 function getChildLabel(children: Child[], childId: string) {

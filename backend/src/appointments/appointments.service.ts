@@ -426,25 +426,47 @@ export class AppointmentsService {
 
       this.ensureScheduleBookable(schedule);
 
-      const appointment = await tx.appointments.create({
-        data: {
-          patient_id: data.patient_id ?? null,
-          schedule_id: data.schedule_id,
-          room_id: data.room_id ?? null,
-          booked_by_user_id: user.user_id,
-          status: 'scheduled',
-          approval_status: 'pending',
-        },
-        include: {
-          child: true,
-          work_schedules: {
-            include: {
-              staff: true,
-            },
-          },
-          room: true,
-        },
-      });
+      const appointment = schedule.appointments
+          ? await tx.appointments.update({
+              where: { appointment_id: schedule.appointments.appointment_id },
+              data: {
+                patient_id: data.patient_id ?? null,
+                schedule_id: data.schedule_id,
+                room_id: data.room_id ?? null,
+                booked_by_user_id: user.user_id,
+                status: 'scheduled',
+                approval_status: 'pending',
+                deleted_at: null,
+              },
+              include: {
+                child: true,
+                work_schedules: {
+                  include: {
+                    staff: true,
+                  },
+                },
+                room: true,
+              },
+            })
+          : await tx.appointments.create({
+              data: {
+                patient_id: data.patient_id ?? null,
+                schedule_id: data.schedule_id,
+                room_id: data.room_id ?? null,
+                booked_by_user_id: user.user_id,
+                status: 'scheduled',
+                approval_status: 'pending',
+              },
+              include: {
+                child: true,
+                work_schedules: {
+                  include: {
+                    staff: true,
+                  },
+                },
+                room: true,
+              },
+            });
 
       await tx.work_schedules.update({
         where: { schedule_id: data.schedule_id },
