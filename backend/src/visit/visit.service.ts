@@ -78,196 +78,222 @@ export class VisitService {
   async createVisit(user: AuthUser, dto: CreateVisitDto) {
     this.ensureVisitManager(user);
 
-    return this.prisma.$transaction(async (tx) => {
-      const appointment = await tx.appointments.findUnique({
-        where: { appointment_id: dto.appointment_id },
-        include: {
-          visit: true,
-          work_schedules: true,
-        },
-      });
-
-      if (!appointment || appointment.deleted_at) {
-        throw new NotFoundException('Appointment not found');
-      }
-
-      if (appointment.status === 'cancelled') {
-        throw new BadRequestException('Cannot create a visit for a cancelled appointment');
-      }
-
-      if (appointment.approval_status !== 'approved') {
-        throw new BadRequestException(
-          'Appointment must be approved by admin before creating a visit',
-        );
-      }
-
-      if (appointment.visit) {
-        throw new BadRequestException('Visit already exists for this appointment');
-      }
-
-      await this.assertAppointmentStaffAccess(user, appointment.work_schedules?.staff_id);
-
-      const visit = await tx.visit.create({
-        data: {
-          appointment_id: dto.appointment_id,
-          visit_date: dto.visit_date ? new Date(dto.visit_date) : undefined,
-        },
-      });
-
-      if (dto.vital_signs) {
-        await tx.vital_signs.create({
-          data: {
-            visit_id: visit.visit_id,
-            ...this.toVitalSignsWriteData(dto.vital_signs),
+    return this.prisma.$transaction(
+      async (tx) => {
+        const appointment = await tx.appointments.findUnique({
+          where: { appointment_id: dto.appointment_id },
+          include: {
+            visit: true,
+            work_schedules: true,
           },
         });
-      }
 
-      if (dto.diagnoses?.length) {
-        await tx.diagnose.createMany({
-          data: dto.diagnoses
-            .map((diagnosis_text) => diagnosis_text.trim())
-            .filter(Boolean)
-            .map((diagnosis_text) => ({
-              visit_id: visit.visit_id,
-              diagnosis_text,
-            })),
+        if (!appointment || appointment.deleted_at) {
+          throw new NotFoundException('Appointment not found');
+        }
+
+        if (appointment.status === 'cancelled') {
+          throw new BadRequestException(
+            'Cannot create a visit for a cancelled appointment',
+          );
+        }
+
+        if (appointment.approval_status !== 'approved') {
+          throw new BadRequestException(
+            'Appointment must be approved by admin before creating a visit',
+          );
+        }
+
+        if (appointment.visit) {
+          throw new BadRequestException(
+            'Visit already exists for this appointment',
+          );
+        }
+
+        await this.assertAppointmentStaffAccess(
+          user,
+          appointment.work_schedules?.staff_id,
+        );
+
+        const visit = await tx.visit.create({
+          data: {
+            appointment_id: dto.appointment_id,
+            visit_date: dto.visit_date ? new Date(dto.visit_date) : undefined,
+          },
         });
-      }
 
-      if (dto.treatment_plans?.length) {
-        await tx.treatment_plan.createMany({
-          data: dto.treatment_plans
-            .map((plan_detail) => plan_detail.trim())
-            .filter(Boolean)
-            .map((plan_detail) => ({
+        if (dto.vital_signs) {
+          await tx.vital_signs.create({
+            data: {
               visit_id: visit.visit_id,
-              plan_detail,
-            })),
+              ...this.toVitalSignsWriteData(dto.vital_signs),
+            },
+          });
+        }
+
+        if (dto.diagnoses?.length) {
+          await tx.diagnose.createMany({
+            data: dto.diagnoses
+              .map((diagnosis_text) => diagnosis_text.trim())
+              .filter(Boolean)
+              .map((diagnosis_text) => ({
+                visit_id: visit.visit_id,
+                diagnosis_text,
+              })),
+          });
+        }
+
+        if (dto.treatment_plans?.length) {
+          await tx.treatment_plan.createMany({
+            data: dto.treatment_plans
+              .map((plan_detail) => plan_detail.trim())
+              .filter(Boolean)
+              .map((plan_detail) => ({
+                visit_id: visit.visit_id,
+                plan_detail,
+              })),
+          });
+        }
+
+        await this.syncPrescriptions(tx, visit.visit_id, dto.prescriptions);
+        await this.syncServiceItems(
+          user,
+          tx,
+          visit.visit_id,
+          dto.service_items,
+        );
+
+        await tx.appointments.update({
+          where: { appointment_id: dto.appointment_id },
+          data: { status: 'completed' },
         });
-      }
 
-      await this.syncPrescriptions(tx, visit.visit_id, dto.prescriptions);
-      await this.syncServiceItems(user, tx, visit.visit_id, dto.service_items);
+        const createdVisit = await tx.visit.findUnique({
+          where: { visit_id: visit.visit_id },
+          include: this.visitInclude(),
+        });
 
-      await tx.appointments.update({
-        where: { appointment_id: dto.appointment_id },
-        data: { status: 'completed' },
-      });
+        if (!createdVisit) {
+          throw new NotFoundException('Visit not found after creation');
+        }
 
-      const createdVisit = await tx.visit.findUnique({
-        where: { visit_id: visit.visit_id },
-        include: this.visitInclude(),
-      });
-
-      if (!createdVisit) {
-        throw new NotFoundException('Visit not found after creation');
-      }
-
-      return this.serializeVisit(createdVisit);
-    });
+        return this.serializeVisit(createdVisit);
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      },
+    );
   }
 
   async updateVisit(user: AuthUser, visitId: number, dto: UpdateVisitDto) {
     this.ensureVisitManager(user);
 
-    return this.prisma.$transaction(async (tx) => {
-      const existingVisit = await tx.visit.findUnique({
-        where: { visit_id: visitId },
-        include: this.visitInclude(),
-      });
-
-      if (!existingVisit || existingVisit.deleted_at) {
-        throw new NotFoundException('Visit not found');
-      }
-
-      await this.assertAppointmentStaffAccess(
-        user,
-        existingVisit.appointments?.work_schedules?.staff_id,
-      );
-
-      await tx.visit.update({
-        where: { visit_id: visitId },
-        data: {
-          visit_date: dto.visit_date ? new Date(dto.visit_date) : undefined,
-        },
-      });
-
-      if (dto.vital_signs) {
-        await tx.vital_signs.upsert({
+    return this.prisma.$transaction(
+      async (tx) => {
+        const existingVisit = await tx.visit.findUnique({
           where: { visit_id: visitId },
-          update: this.toVitalSignsWriteData(dto.vital_signs),
-          create: {
-            visit_id: visitId,
-            ...this.toVitalSignsWriteData(dto.vital_signs),
+          include: this.visitInclude(),
+        });
+
+        if (!existingVisit || existingVisit.deleted_at) {
+          throw new NotFoundException('Visit not found');
+        }
+
+        await this.assertAppointmentStaffAccess(
+          user,
+          existingVisit.appointments?.work_schedules?.staff_id,
+        );
+
+        await tx.visit.update({
+          where: { visit_id: visitId },
+          data: {
+            visit_date: dto.visit_date ? new Date(dto.visit_date) : undefined,
           },
         });
-      }
 
-      if (dto.diagnoses) {
-        await tx.diagnose.deleteMany({ where: { visit_id: visitId } });
-        const diagnoses = dto.diagnoses
-          .map((diagnosis_text) => diagnosis_text.trim())
-          .filter(Boolean);
-
-        if (diagnoses.length) {
-          await tx.diagnose.createMany({
-            data: diagnoses.map((diagnosis_text) => ({
+        if (dto.vital_signs) {
+          await tx.vital_signs.upsert({
+            where: { visit_id: visitId },
+            update: this.toVitalSignsWriteData(dto.vital_signs),
+            create: {
               visit_id: visitId,
-              diagnosis_text,
-            })),
+              ...this.toVitalSignsWriteData(dto.vital_signs),
+            },
           });
         }
-      }
 
-      if (dto.treatment_plans) {
-        await tx.treatment_plan.deleteMany({ where: { visit_id: visitId } });
-        const plans = dto.treatment_plans
-          .map((plan_detail) => plan_detail.trim())
-          .filter(Boolean);
+        if (dto.diagnoses) {
+          await tx.diagnose.deleteMany({ where: { visit_id: visitId } });
+          const diagnoses = dto.diagnoses
+            .map((diagnosis_text) => diagnosis_text.trim())
+            .filter(Boolean);
 
-        if (plans.length) {
-          await tx.treatment_plan.createMany({
-            data: plans.map((plan_detail) => ({
-              visit_id: visitId,
-              plan_detail,
-            })),
+          if (diagnoses.length) {
+            await tx.diagnose.createMany({
+              data: diagnoses.map((diagnosis_text) => ({
+                visit_id: visitId,
+                diagnosis_text,
+              })),
+            });
+          }
+        }
+
+        if (dto.treatment_plans) {
+          await tx.treatment_plan.deleteMany({ where: { visit_id: visitId } });
+          const plans = dto.treatment_plans
+            .map((plan_detail) => plan_detail.trim())
+            .filter(Boolean);
+
+          if (plans.length) {
+            await tx.treatment_plan.createMany({
+              data: plans.map((plan_detail) => ({
+                visit_id: visitId,
+                plan_detail,
+              })),
+            });
+          }
+        }
+
+        if (dto.prescriptions !== undefined) {
+          await this.syncPrescriptions(tx, visitId, dto.prescriptions);
+        }
+
+        if (dto.service_items !== undefined) {
+          await this.syncServiceItems(user, tx, visitId, dto.service_items);
+        }
+
+        if (existingVisit.appointment_id) {
+          await tx.appointments.update({
+            where: { appointment_id: existingVisit.appointment_id },
+            data: { status: 'completed' },
           });
         }
-      }
 
-      if (dto.prescriptions !== undefined) {
-        await this.syncPrescriptions(tx, visitId, dto.prescriptions);
-      }
-
-      if (dto.service_items !== undefined) {
-        await this.syncServiceItems(user, tx, visitId, dto.service_items);
-      }
-
-      if (existingVisit.appointment_id) {
-        await tx.appointments.update({
-          where: { appointment_id: existingVisit.appointment_id },
-          data: { status: 'completed' },
+        const updatedVisit = await tx.visit.findUnique({
+          where: { visit_id: visitId },
+          include: this.visitInclude(),
         });
-      }
 
-      const updatedVisit = await tx.visit.findUnique({
-        where: { visit_id: visitId },
-        include: this.visitInclude(),
-      });
+        if (!updatedVisit) {
+          throw new NotFoundException('Visit not found after update');
+        }
 
-      if (!updatedVisit) {
-        throw new NotFoundException('Visit not found after update');
-      }
-
-      return this.serializeVisit(updatedVisit);
-    });
+        return this.serializeVisit(updatedVisit);
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      },
+    );
   }
 
   private async buildVisitWhere(user: AuthUser, filters: VisitFilters) {
     const where: Record<string, unknown> = {
       deleted_at: null,
-      ...(filters.appointmentId ? { appointment_id: filters.appointmentId } : {}),
+      ...(filters.appointmentId
+        ? { appointment_id: filters.appointmentId }
+        : {}),
       ...(filters.date ? { visit_date: this.toDayRange(filters.date) } : {}),
     };
 
@@ -347,7 +373,9 @@ export class VisitService {
 
     const staff = await this.getStaffRecord(user.user_id);
     if (scheduleStaffId !== staff.staff_id) {
-      throw new ForbiddenException('You can only manage visits for your own appointments');
+      throw new ForbiddenException(
+        'You can only manage visits for your own appointments',
+      );
     }
   }
 
@@ -374,12 +402,16 @@ export class VisitService {
           })
         : null);
 
-    const existingIds = existingPrescriptions.map((item) => item.prescription_id);
+    const existingIds = existingPrescriptions.map(
+      (item) => item.prescription_id,
+    );
     const primaryId = primaryPrescription?.prescription_id ?? null;
     const allPrescriptionIds = primaryId
       ? Array.from(new Set([...existingIds, primaryId]))
       : existingIds;
-    const extraPrescriptionIds = allPrescriptionIds.filter((id) => id !== primaryId);
+    const extraPrescriptionIds = allPrescriptionIds.filter(
+      (id) => id !== primaryId,
+    );
 
     if (allPrescriptionIds.length > 0) {
       await tx.prescription_item.deleteMany({
@@ -429,7 +461,9 @@ export class VisitService {
     });
 
     if (drugs.length !== drugIds.length) {
-      throw new BadRequestException('One or more prescribed drugs were not found');
+      throw new BadRequestException(
+        'One or more prescribed drugs were not found',
+      );
     }
 
     await tx.prescription_item.createMany({
@@ -447,7 +481,10 @@ export class VisitService {
     const quantities = new Map<number, number>();
 
     for (const item of items) {
-      quantities.set(item.drug_id, (quantities.get(item.drug_id) ?? 0) + item.quantity);
+      quantities.set(
+        item.drug_id,
+        (quantities.get(item.drug_id) ?? 0) + item.quantity,
+      );
     }
 
     return [...quantities.entries()].map(([drug_id, quantity]) => ({
@@ -497,15 +534,21 @@ export class VisitService {
 
   private toVitalSignsWriteData(vitalSigns: UpsertVitalSignsDto) {
     return {
-      ...(vitalSigns.weight_kg !== undefined ? { weight_kg: vitalSigns.weight_kg } : {}),
-      ...(vitalSigns.height_cm !== undefined ? { height_cm: vitalSigns.height_cm } : {}),
+      ...(vitalSigns.weight_kg !== undefined
+        ? { weight_kg: vitalSigns.weight_kg }
+        : {}),
+      ...(vitalSigns.height_cm !== undefined
+        ? { height_cm: vitalSigns.height_cm }
+        : {}),
       ...(vitalSigns.bp_systolic !== undefined
         ? { bp_systolic: vitalSigns.bp_systolic }
         : {}),
       ...(vitalSigns.bp_diastolic !== undefined
         ? { bp_diastolic: vitalSigns.bp_diastolic }
         : {}),
-      ...(vitalSigns.heart_rate !== undefined ? { heart_rate: vitalSigns.heart_rate } : {}),
+      ...(vitalSigns.heart_rate !== undefined
+        ? { heart_rate: vitalSigns.heart_rate }
+        : {}),
       ...(vitalSigns.note !== undefined ? { note: vitalSigns.note } : {}),
     };
   }

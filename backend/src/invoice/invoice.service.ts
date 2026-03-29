@@ -53,8 +53,12 @@ export class InvoiceService {
       throw new BadRequestException('Prescription has no items to invoice');
     }
 
-    return this.prisma.$transaction((tx) =>
-      this.syncInvoiceForVisitTx(tx, prescription.visit_id!),
+    return this.prisma.$transaction(
+      (tx) => this.syncInvoiceForVisitTx(tx, prescription.visit_id!),
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      },
     );
   }
 
@@ -107,7 +111,13 @@ export class InvoiceService {
   }
 
   async syncInvoiceForVisit(visitId: number) {
-    return this.prisma.$transaction((tx) => this.syncInvoiceForVisitTx(tx, visitId));
+    return this.prisma.$transaction(
+      (tx) => this.syncInvoiceForVisitTx(tx, visitId),
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      },
+    );
   }
 
   ensureServicePriceManager(user: AuthUser) {
@@ -121,7 +131,9 @@ export class InvoiceService {
     ]);
 
     if (!roles.has('admin')) {
-      throw new ForbiddenException('Admin access required to manage treatment prices');
+      throw new ForbiddenException(
+        'Admin access required to manage treatment prices',
+      );
     }
   }
 
@@ -184,7 +196,10 @@ export class InvoiceService {
         data: prescriptionItems.map((item) => ({
           invoice_id: invoice!.invoice_id,
           item_type: item_type.drug,
-          description: this.buildDrugDescription(item.drug?.name, item.drug?.dose),
+          description: this.buildDrugDescription(
+            item.drug?.name,
+            item.drug?.dose,
+          ),
           qty: item.quantity ?? 1,
           unit_price: item.drug!.unit_price,
           prescription_item_id: item.prescription_item_id,
@@ -270,7 +285,8 @@ export class InvoiceService {
         description: item.description,
         qty: item.qty,
         unit_price: item.unit_price,
-        amount: item.amount ?? item.unit_price.mul(new Prisma.Decimal(item.qty)),
+        amount:
+          item.amount ?? item.unit_price.mul(new Prisma.Decimal(item.qty)),
         prescription_item_id: item.prescription_item_id,
         drug_name: item.prescription_item?.drug?.name ?? null,
         drug_dose: item.prescription_item?.drug?.dose ?? null,

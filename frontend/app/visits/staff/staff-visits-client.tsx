@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Alert,
@@ -174,6 +174,8 @@ type PrescriptionFormItem = {
   quantity: string;
 };
 
+type VisitWorkspaceTab = "queue" | "editor" | "saved";
+
 const emptyForm: VisitFormState = {
   appointment_id: "",
   visit_date: "",
@@ -209,6 +211,9 @@ export default function StaffVisitsClient() {
   const [visitQuery, setVisitQuery] = useState("");
   const [appointmentPage, setAppointmentPage] = useState(1);
   const [visitPage, setVisitPage] = useState(1);
+  const [activeTab, setActiveTab] = useState<VisitWorkspaceTab>(
+    requestedAppointmentId ? "editor" : "queue",
+  );
 
   const canManageVisits = hasRole(profile, ["admin", "nurse", "doctor", "psychologist"]);
   const canManageTreatmentPricing = hasRole(profile, ["admin"]);
@@ -292,58 +297,6 @@ export default function StaffVisitsClient() {
     };
   }, [appointments, form.appointment_id, selectedVisit]);
 
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      setError("");
-
-      try {
-        const [
-          { data: profileData },
-          { data: appointmentData },
-          { data: visitData },
-          { data: drugData },
-        ] =
-          await Promise.all([
-            api.get<Profile>("/auth/profile"),
-            api.get<Appointment[]>("/appointments"),
-            api.get<VisitRecord[]>("/visit"),
-            api.get<DrugOption[]>("/drug"),
-          ]);
-
-        setProfile(profileData);
-        setAppointments(appointmentData);
-        setVisits(visitData);
-        setDrugs(drugData);
-
-        const preselectedVisit = requestedAppointmentId
-          ? visitData.find((item) => String(item.appointment_id) === requestedAppointmentId)
-          : null;
-
-        if (preselectedVisit) {
-          selectVisit(preselectedVisit);
-          return;
-        }
-
-        resetEditor(requestedAppointmentId);
-      } catch (err: unknown) {
-        const error = err as AxiosError<ApiErrorResponse>;
-
-        if (error.response?.status === 401) {
-          localStorage.removeItem("access_token");
-          router.push("/login");
-          return;
-        }
-
-        setError(normalizeError(error, "Unable to load visit records"));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    load();
-  }, [requestedAppointmentId, router]);
-
   const handleChange = (
     event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => {
@@ -407,15 +360,19 @@ export default function StaffVisitsClient() {
     }));
   };
 
-  const selectVisit = (visit: VisitRecord) => {
+  const selectVisit = useCallback((visit: VisitRecord) => {
     setSelectedVisitId(visit.visit_id);
     setSuccess("");
     setError("");
     setForm(toFormState(visit));
     setPrescriptionItems(toPrescriptionFormState(visit));
-  };
+    setActiveTab("editor");
+  }, []);
 
-  const resetEditor = (appointmentId = requestedAppointmentId) => {
+  const resetEditor = useCallback((
+    appointmentId = requestedAppointmentId,
+    switchTab: boolean = true,
+  ) => {
     setSelectedVisitId(null);
     setSuccess("");
     setError("");
@@ -425,7 +382,62 @@ export default function StaffVisitsClient() {
       visit_date: new Date().toISOString().slice(0, 16),
     });
     setPrescriptionItems([createPrescriptionItem()]);
-  };
+    if (switchTab) {
+      setActiveTab("editor");
+    }
+  }, [requestedAppointmentId]);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      setError("");
+
+      try {
+        const [
+          { data: profileData },
+          { data: appointmentData },
+          { data: visitData },
+          { data: drugData },
+        ] =
+          await Promise.all([
+            api.get<Profile>("/auth/profile"),
+            api.get<Appointment[]>("/appointments"),
+            api.get<VisitRecord[]>("/visit"),
+            api.get<DrugOption[]>("/drug"),
+          ]);
+
+        setProfile(profileData);
+        setAppointments(appointmentData);
+        setVisits(visitData);
+        setDrugs(drugData);
+
+        const preselectedVisit = requestedAppointmentId
+          ? visitData.find((item) => String(item.appointment_id) === requestedAppointmentId)
+          : null;
+
+        if (preselectedVisit) {
+          selectVisit(preselectedVisit);
+          return;
+        }
+
+        resetEditor(requestedAppointmentId, Boolean(requestedAppointmentId));
+      } catch (err: unknown) {
+        const error = err as AxiosError<ApiErrorResponse>;
+
+        if (error.response?.status === 401) {
+          localStorage.removeItem("access_token");
+          router.push("/login");
+          return;
+        }
+
+        setError(normalizeError(error, "Unable to load visit records"));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [requestedAppointmentId, resetEditor, router, selectVisit]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -513,170 +525,210 @@ export default function StaffVisitsClient() {
         <StatCard label="Workspace" value={canManageVisits ? "Edit" : "View"} helper="Role-based access mode" />
       </Box>
 
-      <Box display="grid" gridTemplateColumns={{ xs: "1fr", xl: "0.9fr 1.1fr" }} gap={2.5}>
-        <Stack spacing={2.5}>
-          <DashboardCard>
-            <Typography variant="h5">Appointment queue</Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-              Start from a booked appointment, or reopen an existing visit for review.
-            </Typography>
-            <TextField
-              sx={{ mt: 2.25 }}
-              fullWidth
-              label="Search appointment queue"
-              value={appointmentQuery}
-              onChange={(event) => {
-                setAppointmentQuery(event.target.value);
-                setAppointmentPage(1);
-              }}
-              placeholder="Child, parent, specialist, status"
-            />
-            <Stack spacing={1.5} sx={{ mt: 2.25 }}>
-              {appointments.length === 0 && (
-                <Typography color="text.secondary">No appointments available.</Typography>
-              )}
-              {pagedAppointments.map((appointment) => {
-                const linkedVisit = visitMap.get(appointment.appointment_id) ?? null;
-                const active = linkedVisit?.visit_id === selectedVisitId;
+      <DashboardCard sx={{ mb: 2.5 }}>
+        <Box
+          display="flex"
+          gap={1.25}
+          flexWrap="wrap"
+          sx={{
+            "& .MuiButton-root": {
+              minHeight: 46,
+              px: 2.25,
+              borderRadius: 3,
+              fontWeight: 700,
+            },
+          }}
+        >
+          <Button
+            variant={activeTab === "queue" ? "contained" : "outlined"}
+            onClick={() => setActiveTab("queue")}
+          >
+            Appointment queue
+          </Button>
+          <Button
+            variant={activeTab === "editor" ? "contained" : "outlined"}
+            onClick={() => setActiveTab("editor")}
+          >
+            {selectedVisitId ? "Update visit record" : "Create visit record"}
+          </Button>
+          <Button
+            variant={activeTab === "saved" ? "contained" : "outlined"}
+            onClick={() => setActiveTab("saved")}
+          >
+            Saved visit records
+          </Button>
+        </Box>
+        <Typography color="text.secondary" sx={{ mt: 1.5 }}>
+          Keep everything in one workspace, then switch tabs to choose what you want to do next.
+        </Typography>
+      </DashboardCard>
 
-                return (
-                  <Box
-                    key={appointment.appointment_id}
-                    sx={{
-                      p: 2,
-                      borderRadius: 4,
-                      background: active ? "rgba(204, 220, 188, 0.42)" : "rgba(255,255,255,0.56)",
-                      border: active
-                        ? "1px solid rgba(108, 144, 102, 0.36)"
-                        : "1px solid rgba(122, 156, 156, 0.14)",
-                    }}
-                  >
-                    <Box display="flex" justifyContent="space-between" gap={2} flexWrap="wrap">
-                      <Box>
-                        <Typography sx={{ fontWeight: 700 }}>
-                          {appointment.child?.first_name || "-"} {appointment.child?.last_name || ""}
-                        </Typography>
-                        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                          {formatDate(appointment.work_schedules?.work_date || null)} | {formatTime(appointment.work_schedules?.start_time || null)} - {formatTime(appointment.work_schedules?.end_time || null)}
-                        </Typography>
-                        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                          Parent: {appointment.booked_by?.parent?.[0]?.first_name || "-"} {appointment.booked_by?.parent?.[0]?.last_name || ""}
-                        </Typography>
-                        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                          Specialist: {appointment.work_schedules?.staff?.first_name || "-"} {appointment.work_schedules?.staff?.last_name || ""}
-                        </Typography>
-                      </Box>
-                      <Stack alignItems={{ xs: "flex-start", sm: "flex-end" }} spacing={1.25}>
-                        <Chip
-                          label={linkedVisit ? "Visit saved" : titleCase(appointment.status)}
-                          color={linkedVisit ? "success" : appointment.status === "cancelled" ? "error" : "default"}
-                        />
-                        <Chip
-                          label={`Approval: ${titleCase(appointment.approval_status || "pending")}`}
-                          color={
-                            appointment.approval_status === "approved"
-                              ? "success"
-                              : appointment.approval_status === "rejected"
-                                ? "error"
-                                : "warning"
-                          }
-                        />
-                        <Button
-                          variant={linkedVisit ? "outlined" : "contained"}
-                          disabled={appointment.status === "cancelled" || appointment.approval_status !== "approved"}
-                          onClick={() => {
-                            if (linkedVisit) {
-                              selectVisit(linkedVisit);
-                              return;
-                            }
-
-                            resetEditor(String(appointment.appointment_id));
-                          }}
-                        >
-                          {linkedVisit ? "Open record" : appointment.approval_status === "approved" ? "Create visit" : "Waiting for approval"}
-                        </Button>
-                      </Stack>
-                    </Box>
-                  </Box>
-                );
-              })}
-            </Stack>
-            {filteredAppointments.length > pageSize && (
-              <Box display="flex" justifyContent="center" sx={{ mt: 2.25 }}>
-                <Pagination
-                  page={appointmentPage}
-                  count={Math.ceil(filteredAppointments.length / pageSize)}
-                  onChange={(_, value) => setAppointmentPage(value)}
-                  color="primary"
-                />
-              </Box>
+      {activeTab === "queue" && (
+        <DashboardCard>
+          <Typography variant="h5">Appointment queue</Typography>
+          <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+            Start from a booked appointment, or reopen an existing visit for review.
+          </Typography>
+          <TextField
+            sx={{ mt: 2.25 }}
+            fullWidth
+            label="Search appointment queue"
+            value={appointmentQuery}
+            onChange={(event) => {
+              setAppointmentQuery(event.target.value);
+              setAppointmentPage(1);
+            }}
+            placeholder="Child, parent, specialist, status"
+          />
+          <Stack spacing={1.5} sx={{ mt: 2.25 }}>
+            {appointments.length === 0 && (
+              <Typography color="text.secondary">No appointments available.</Typography>
             )}
-          </DashboardCard>
+            {pagedAppointments.map((appointment) => {
+              const linkedVisit = visitMap.get(appointment.appointment_id) ?? null;
+              const active = linkedVisit?.visit_id === selectedVisitId;
 
-          <DashboardCard>
-            <Typography variant="h5">Saved visit records</Typography>
-            <TextField
-              sx={{ mt: 2.25 }}
-              fullWidth
-              label="Search visit records"
-              value={visitQuery}
-              onChange={(event) => {
-                setVisitQuery(event.target.value);
-                setVisitPage(1);
-              }}
-              placeholder="Child or parent name"
-            />
-            <Stack spacing={1.5} sx={{ mt: 2.25 }}>
-              {visits.length === 0 && (
-                <Typography color="text.secondary">No visit records saved yet.</Typography>
-              )}
-              {pagedVisits.map((visit) => (
+              return (
                 <Box
-                  key={visit.visit_id}
+                  key={appointment.appointment_id}
                   sx={{
                     p: 2,
                     borderRadius: 4,
-                    background:
-                      visit.visit_id === selectedVisitId ? "rgba(204, 220, 188, 0.42)" : "rgba(255,255,255,0.56)",
-                    border:
-                      visit.visit_id === selectedVisitId
-                        ? "1px solid rgba(108, 144, 102, 0.36)"
-                        : "1px solid rgba(122, 156, 156, 0.14)",
+                    background: active ? "rgba(204, 220, 188, 0.42)" : "rgba(255,255,255,0.56)",
+                    border: active
+                      ? "1px solid rgba(108, 144, 102, 0.36)"
+                      : "1px solid rgba(122, 156, 156, 0.14)",
                   }}
                 >
                   <Box display="flex" justifyContent="space-between" gap={2} flexWrap="wrap">
                     <Box>
                       <Typography sx={{ fontWeight: 700 }}>
-                        {visit.appointment?.patient?.first_name || "-"} {visit.appointment?.patient?.last_name || ""}
+                        {appointment.child?.first_name || "-"} {appointment.child?.last_name || ""}
                       </Typography>
                       <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                        Visit date: {formatDate(visit.visit_date)}
+                        {formatDate(appointment.work_schedules?.work_date || null)} | {formatTime(appointment.work_schedules?.start_time || null)} - {formatTime(appointment.work_schedules?.end_time || null)}
                       </Typography>
                       <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                        Diagnoses: {visit.diagnoses.length} | Medications: {visit.prescriptions.flatMap((item) => item.items).length}
+                        Parent: {appointment.booked_by?.parent?.[0]?.first_name || "-"} {appointment.booked_by?.parent?.[0]?.last_name || ""}
+                      </Typography>
+                      <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                        Specialist: {appointment.work_schedules?.staff?.first_name || "-"} {appointment.work_schedules?.staff?.last_name || ""}
                       </Typography>
                     </Box>
-                    <Button variant="outlined" onClick={() => selectVisit(visit)}>
-                      Review
-                    </Button>
+                    <Stack alignItems={{ xs: "flex-start", sm: "flex-end" }} spacing={1.25}>
+                      <Chip
+                        label={linkedVisit ? "Visit saved" : titleCase(appointment.status)}
+                        color={linkedVisit ? "success" : appointment.status === "cancelled" ? "error" : "default"}
+                      />
+                      <Chip
+                        label={`Approval: ${titleCase(appointment.approval_status || "pending")}`}
+                        color={
+                          appointment.approval_status === "approved"
+                            ? "success"
+                            : appointment.approval_status === "rejected"
+                              ? "error"
+                              : "warning"
+                        }
+                      />
+                      <Button
+                        variant={linkedVisit ? "outlined" : "contained"}
+                        disabled={appointment.status === "cancelled" || appointment.approval_status !== "approved"}
+                        onClick={() => {
+                          if (linkedVisit) {
+                            selectVisit(linkedVisit);
+                            return;
+                          }
+
+                          resetEditor(String(appointment.appointment_id));
+                        }}
+                      >
+                        {linkedVisit ? "Open record" : appointment.approval_status === "approved" ? "Create visit" : "Waiting for approval"}
+                      </Button>
+                    </Stack>
                   </Box>
                 </Box>
-              ))}
-            </Stack>
-            {filteredVisits.length > pageSize && (
-              <Box display="flex" justifyContent="center" sx={{ mt: 2.25 }}>
-                <Pagination
-                  page={visitPage}
-                  count={Math.ceil(filteredVisits.length / pageSize)}
-                  onChange={(_, value) => setVisitPage(value)}
-                  color="primary"
-                />
-              </Box>
-            )}
-          </DashboardCard>
-        </Stack>
+              );
+            })}
+          </Stack>
+          {filteredAppointments.length > pageSize && (
+            <Box display="flex" justifyContent="center" sx={{ mt: 2.25 }}>
+              <Pagination
+                page={appointmentPage}
+                count={Math.ceil(filteredAppointments.length / pageSize)}
+                onChange={(_, value) => setAppointmentPage(value)}
+                color="primary"
+              />
+            </Box>
+          )}
+        </DashboardCard>
+      )}
 
-        <Stack spacing={2.5}>
+      {activeTab === "saved" && (
+        <DashboardCard>
+          <Typography variant="h5">Saved visit records</Typography>
+          <TextField
+            sx={{ mt: 2.25 }}
+            fullWidth
+            label="Search visit records"
+            value={visitQuery}
+            onChange={(event) => {
+              setVisitQuery(event.target.value);
+              setVisitPage(1);
+            }}
+            placeholder="Child or parent name"
+          />
+          <Stack spacing={1.5} sx={{ mt: 2.25 }}>
+            {visits.length === 0 && (
+              <Typography color="text.secondary">No visit records saved yet.</Typography>
+            )}
+            {pagedVisits.map((visit) => (
+              <Box
+                key={visit.visit_id}
+                sx={{
+                  p: 2,
+                  borderRadius: 4,
+                  background:
+                    visit.visit_id === selectedVisitId ? "rgba(204, 220, 188, 0.42)" : "rgba(255,255,255,0.56)",
+                  border:
+                    visit.visit_id === selectedVisitId
+                      ? "1px solid rgba(108, 144, 102, 0.36)"
+                      : "1px solid rgba(122, 156, 156, 0.14)",
+                }}
+              >
+                <Box display="flex" justifyContent="space-between" gap={2} flexWrap="wrap">
+                  <Box>
+                    <Typography sx={{ fontWeight: 700 }}>
+                      {visit.appointment?.patient?.first_name || "-"} {visit.appointment?.patient?.last_name || ""}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                      Visit date: {formatDate(visit.visit_date)}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                      Diagnoses: {visit.diagnoses.length} | Medications: {visit.prescriptions.flatMap((item) => item.items).length}
+                    </Typography>
+                  </Box>
+                  <Button variant="outlined" onClick={() => selectVisit(visit)}>
+                    Review
+                  </Button>
+                </Box>
+              </Box>
+            ))}
+          </Stack>
+          {filteredVisits.length > pageSize && (
+            <Box display="flex" justifyContent="center" sx={{ mt: 2.25 }}>
+              <Pagination
+                page={visitPage}
+                count={Math.ceil(filteredVisits.length / pageSize)}
+                onChange={(_, value) => setVisitPage(value)}
+                color="primary"
+              />
+            </Box>
+          )}
+        </DashboardCard>
+      )}
+
+      {activeTab === "editor" && (
+        <Box display="grid" gridTemplateColumns={{ xs: "1fr", xl: "1.08fr 0.92fr" }} gap={2.5}>
           <DashboardCard>
             <Typography variant="h5">{selectedVisitId ? "Update visit record" : "Create visit record"}</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.75 }}>
@@ -989,8 +1041,8 @@ export default function StaffVisitsClient() {
               </Stack>
             )}
           </DashboardCard>
-        </Stack>
-      </Box>
+        </Box>
+      )}
     </AppShell>
   );
 }
