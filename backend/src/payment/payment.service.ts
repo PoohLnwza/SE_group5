@@ -5,8 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, invoice_status, payment_status } from '@prisma/client';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const OmiseLib = require('omise').Omise ?? require('omise');
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { CreateOmiseChargeDto } from './dto/create-omise-charge.dto';
 
 type AuthUser = {
   user_id: number;
@@ -17,6 +20,19 @@ type AuthUser = {
 
 @Injectable()
 export class PaymentService {
+  private _omise: any;
+
+  private get omise() {
+    if (!this._omise) {
+      this._omise = OmiseLib({
+        publicKey: process.env.OMISE_PUBLIC_KEY!,
+        secretKey: process.env.OMISE_SECRET_KEY!,
+        omiseVersion: '2019-05-29',
+      });
+    }
+    return this._omise;
+  }
+
   constructor(private readonly prisma: PrismaService) {}
 
   /** Parent submits payment with slip */
@@ -41,7 +57,6 @@ export class PaymentService {
       throw new BadRequestException('Invoice is already paid');
     }
 
-    // Parent can only pay for their own children's invoices
     if (user.user_type === 'parent') {
       const childId = invoice.visit?.appointments?.patient_id;
       if (childId) {
@@ -57,7 +72,6 @@ export class PaymentService {
       }
     }
 
-    // Check for existing pending payment
     const existingPending = invoice.payment.find(
       (p) => p.status === payment_status.pending,
     );
@@ -80,6 +94,128 @@ export class PaymentService {
     });
 
     return this.mapPayment(payment);
+  }
+
+  /** เช็ค charge status จาก Omise */
+  async getChargeStatus(chargeId: string) {
+    const charge = await this.omise.charges.retrieve(chargeId);
+    return { status: charge.status };
+  }
+
+  /** Parent creates Omise PromptPay charge */
+  async createOmiseCharge(user: AuthUser, dto: CreateOmiseChargeDto) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { invoice_id: dto.invoiceId },
+      include: {
+        visit: {
+          include: {
+            appointments: { select: { patient_id: true } },
+          },
+        },
+        payment: { where: { deleted_at: null } },
+      },
+    });
+
+    if (!invoice || invoice.deleted_at) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    if (invoice.status === invoice_status.paid) {
+      throw new BadRequestException('Invoice is already paid');
+    }
+
+    if (user.user_type === 'parent') {
+      const childId = invoice.visit?.appointments?.patient_id;
+      if (childId) {
+        const link = await this.prisma.child_parent.findFirst({
+          where: {
+            child_id: childId,
+            parent: { user_id: user.user_id },
+          },
+        });
+        if (!link) {
+          throw new ForbiddenException('You can only pay for your own children');
+        }
+      }
+    }
+
+    const existingPending = invoice.payment.find(
+      (p) => p.status === payment_status.pending,
+    );
+    if (existingPending) {
+      throw new BadRequestException(
+        'There is already a pending payment for this invoice.',
+      );
+    }
+
+    const amountSatang = Math.round(Number(invoice.total_amount ?? 0) * 100);
+
+    const source = await this.omise.sources.create({
+      type: 'promptpay',
+      amount: amountSatang,
+      currency: 'THB',
+    });
+
+    const charge = await this.omise.charges.create({
+      amount: amountSatang,
+      currency: 'THB',
+      source: source.id,
+      return_uri: `${process.env.FRONTEND_URL}/payment/parent`,
+      metadata: { invoice_id: dto.invoiceId },
+    });
+
+    await this.prisma.payment.create({
+      data: {
+        invoice_id: dto.invoiceId,
+        amount: invoice.total_amount ?? new Prisma.Decimal(0),
+        method: 'promptpay',
+        status: payment_status.pending,
+        slip_image: charge.id, // เก็บ charge_id ไว้ใช้ verify webhook
+      },
+    });
+
+    const qrCodeUri = (charge as any)?.source?.scannable_code?.image?.download_uri ?? null;
+
+    return {
+      charge_id: charge.id,
+      qr_code_uri: qrCodeUri,
+      amount: Number(invoice.total_amount ?? 0),
+    };
+  }
+
+  /** รับ webhook จาก Omise เมื่อ charge สำเร็จ */
+  async handleOmiseWebhook(body: any) {
+    if (body?.key !== 'charge.complete') return { received: true };
+
+    const charge = body?.data;
+    if (!charge?.id || charge?.status !== 'successful') return { received: true };
+
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        slip_image: charge.id, // charge_id ที่เก็บไว้
+        status: payment_status.pending,
+        deleted_at: null,
+      },
+    });
+
+    if (!payment) return { received: true };
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: { payment_id: payment.payment_id },
+        data: {
+          status: payment_status.confirmed,
+          confirmed_at: new Date(),
+        },
+      });
+
+      await tx.invoice.update({
+        where: { invoice_id: payment.invoice_id },
+        data: { status: invoice_status.paid },
+      });
+    });
+
+    return { received: true };
   }
 
   /** Parent views their payment history */
@@ -140,6 +276,7 @@ export class PaymentService {
     return payments.map((p) => ({
       ...this.mapPayment(p),
       invoice_total: p.invoice.total_amount,
+      visit_id: p.invoice.visit_id,
       child_name: p.invoice.visit?.appointments?.child
         ? `${p.invoice.visit.appointments.child.first_name} ${p.invoice.visit.appointments.child.last_name}`
         : null,

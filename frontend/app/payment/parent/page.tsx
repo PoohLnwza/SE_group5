@@ -22,6 +22,7 @@ import { AppShell, StatCard } from '@/app/components/app-shell';
 import { PaginatedTableCard } from '@/app/components/paginated-table-card';
 import { SearchSettingsCard } from '@/app/components/search-settings-card';
 import { parentNav } from '@/app/components/navigation';
+import { ReceiptDialog, type ReceiptData } from '@/app/components/receipt-dialog';
 import api from '@/lib/api';
 import type { Profile } from '@/lib/access';
 import { formatDate, formatMoney } from '@/lib/format';
@@ -29,6 +30,7 @@ import { formatDate, formatMoney } from '@/lib/format';
 type Payment = {
   payment_id: number;
   invoice_id: number;
+  visit_id: number | null;
   amount: string;
   method: string;
   status: string;
@@ -61,8 +63,12 @@ export default function ParentPaymentPage() {
 
   const [payDialogOpen, setPayDialogOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
-  const [slipImage, setSlipImage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [omiseQrUrl, setOmiseQrUrl] = useState<string | null>(null);
+  const [omiseChargeId, setOmiseChargeId] = useState<string | null>(null);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -133,25 +139,100 @@ export default function ParentPaymentPage() {
 
   const handleOpenPay = (invoice: Invoice) => {
     setSelectedInvoice(invoice);
-    setSlipImage('');
+
+    setOmiseQrUrl(null);
+    setOmiseChargeId(null);
     setPayDialogOpen(true);
   };
 
-  const handleSubmitPayment = async () => {
+  const handleGenerateQr = async () => {
     if (!selectedInvoice) return;
     setSubmitting(true);
     try {
-      await api.post('/payment', {
+      const { data } = await api.post('/payment/omise-charge', {
         invoiceId: selectedInvoice.invoice_id,
-        slipImage: slipImage || undefined,
       });
-      setPayDialogOpen(false);
-      await fetchData();
+      setOmiseQrUrl(data.qr_code_uri);
+      setOmiseChargeId(data.charge_id);
     } catch (err: any) {
-      const message = err?.response?.data?.message || 'Unable to submit payment';
+      const message = err?.response?.data?.message || 'Unable to generate QR';
       window.alert(Array.isArray(message) ? message.join(', ') : message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleClosePayDialog = async () => {
+    setPayDialogOpen(false);
+    if (omiseChargeId && selectedInvoice) {
+      try {
+        const { data: chargeData } = await api.get<{ status: string }>(`/payment/charge-status/${omiseChargeId}`);
+        if (chargeData.status === 'successful') {
+          await fetchData();
+
+          // fetch invoice + visit data สำหรับใบเสร็จ
+          try {
+            const { data: invoiceData } = await api.get<any>(`/invoice/visit/${selectedInvoice.visit_id}`);
+            const { data: visitData } = await api.get<any>(`/visit/${selectedInvoice.visit_id}`);
+            const { data: paymentData } = await api.get<any>(`/payment/invoice/${selectedInvoice.invoice_id}`);
+
+            const latestPayment = paymentData.payments?.[0];
+            const child = visitData?.appointment?.patient;
+            const doctor = visitData?.appointment?.schedule?.staff;
+
+            setReceiptData({
+              payment_id: latestPayment?.payment_id ?? 0,
+              payment_date: latestPayment?.payment_date ?? new Date().toISOString(),
+              invoice_id: invoiceData.invoice_id,
+              total_amount: Number(invoiceData.total_amount ?? 0),
+              child_name: child ? `${child.first_name} ${child.last_name}` : '-',
+              visit_date: visitData?.visit_date ?? null,
+              doctor_name: doctor ? `${doctor.first_name} ${doctor.last_name}` : null,
+              items: (invoiceData.items ?? []).map((item: any) => ({
+                description: item.description,
+                qty: item.qty,
+                unit_price: Number(item.unit_price ?? 0),
+                amount: Number(item.amount ?? 0),
+              })),
+            });
+            setReceiptOpen(true);
+          } catch {
+            setPaymentSuccess(true);
+          }
+        }
+      } catch {
+        // ไม่แสดง error ถ้าเช็ค status ไม่ได้
+      }
+    }
+  };
+
+  const handleViewReceipt = async (payment: Payment) => {
+    if (!payment.visit_id) return;
+    try {
+      const [{ data: invoiceData }, { data: visitData }] = await Promise.all([
+        api.get<any>(`/invoice/visit/${payment.visit_id}`),
+        api.get<any>(`/visit/${payment.visit_id}`),
+      ]);
+      const child = visitData?.appointment?.patient;
+      const doctor = visitData?.appointment?.schedule?.staff;
+      setReceiptData({
+        payment_id: payment.payment_id,
+        payment_date: payment.payment_date,
+        invoice_id: invoiceData.invoice_id,
+        total_amount: Number(invoiceData.total_amount ?? 0),
+        child_name: child ? `${child.first_name} ${child.last_name}` : (payment.child_name ?? '-'),
+        visit_date: visitData?.visit_date ?? null,
+        doctor_name: doctor ? `${doctor.first_name} ${doctor.last_name}` : null,
+        items: (invoiceData.items ?? []).map((item: any) => ({
+          description: item.description,
+          qty: item.qty,
+          unit_price: Number(item.unit_price ?? 0),
+          amount: Number(item.amount ?? 0),
+        })),
+      });
+      setReceiptOpen(true);
+    } catch {
+      window.alert('ไม่สามารถโหลดใบเสร็จได้');
     }
   };
 
@@ -301,7 +382,7 @@ export default function ParentPaymentPage() {
                   <TableCell>Method</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell>Submitted</TableCell>
-                  <TableCell>Slip</TableCell>
+                  <TableCell>Action</TableCell>
                 </TableRow>
               }
               body={
@@ -317,7 +398,13 @@ export default function ParentPaymentPage() {
                         <Chip label={statusLabel(payment.status)} size="small" color={statusColor(payment.status)} />
                       </TableCell>
                       <TableCell>{formatDate(payment.payment_date)}</TableCell>
-                      <TableCell>{payment.slip_image ? 'Uploaded' : '-'}</TableCell>
+                      <TableCell>
+                        {payment.status === 'confirmed' && payment.visit_id ? (
+                          <Button size="small" variant="outlined" onClick={() => handleViewReceipt(payment)}>
+                            ดูใบเสร็จ
+                          </Button>
+                        ) : '-'}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </>
@@ -327,7 +414,7 @@ export default function ParentPaymentPage() {
         </>
       )}
 
-      <Dialog open={payDialogOpen} onClose={() => setPayDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={payDialogOpen} onClose={handleClosePayDialog} maxWidth="sm" fullWidth>
         <DialogTitle>Payment - Invoice #{selectedInvoice?.invoice_id}</DialogTitle>
         <DialogContent>
           <Box sx={{ mt: 1.5 }}>
@@ -337,33 +424,54 @@ export default function ParentPaymentPage() {
 
             <Box textAlign="center" sx={{ mt: 3 }}>
               <Typography variant="body2" color="text.secondary" mb={1}>
-                Scan QR Code to pay
+                {omiseQrUrl ? 'Scan QR Code to pay via PromptPay' : 'Click "Generate QR" to get a PromptPay QR code'}
               </Typography>
-              <Box
-                component="img"
-                src="/qr-payment.png"
-                alt="Payment QR Code"
-                sx={{ maxWidth: 250, width: '100%', mx: 'auto', borderRadius: 2 }}
-              />
+              {omiseQrUrl ? (
+                <Box
+                  component="img"
+                  src={omiseQrUrl}
+                  alt="PromptPay QR Code"
+                  sx={{ maxWidth: 250, width: '100%', mx: 'auto', borderRadius: 2 }}
+                />
+              ) : (
+                <Box sx={{ height: 250, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px dashed', borderColor: 'divider', borderRadius: 2 }}>
+                  <Typography variant="body2" color="text.secondary">QR will appear here</Typography>
+                </Box>
+              )}
             </Box>
-
-            <TextField
-              label="Slip image URL (optional)"
-              placeholder="Paste slip image URL after transfer"
-              value={slipImage}
-              onChange={(event) => setSlipImage(event.target.value)}
-              fullWidth
-              sx={{ mt: 3 }}
-            />
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setPayDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmitPayment} disabled={submitting}>
-            {submitting ? 'Submitting...' : 'Confirm payment'}
-          </Button>
+          <Button onClick={handleClosePayDialog}>Close</Button>
+          {!omiseQrUrl && (
+            <Button variant="contained" onClick={handleGenerateQr} disabled={submitting}>
+              {submitting ? 'Generating...' : 'Generate QR'}
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
+
+      <Dialog open={paymentSuccess} onClose={() => setPaymentSuccess(false)} maxWidth="xs" fullWidth>
+        <DialogContent>
+          <Box textAlign="center" sx={{ py: 3 }}>
+            <Typography variant="h2" mb={1}>✓</Typography>
+            <Typography variant="h6" fontWeight={600} mb={1}>ชำระเงินเสร็จแล้ว</Typography>
+            <Typography variant="body2" color="text.secondary">
+              การชำระเงินของคุณได้รับการยืนยันแล้ว
+            </Typography>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ justifyContent: 'center', pb: 3 }}>
+          <Button onClick={() => setPaymentSuccess(false)}>ปิด</Button>
+          <Button variant="contained" onClick={() => { setPaymentSuccess(false); setReceiptOpen(true); }}>ดูใบเสร็จ</Button>
+        </DialogActions>
+      </Dialog>
+
+      <ReceiptDialog
+        open={receiptOpen}
+        data={receiptData}
+        onClose={() => setReceiptOpen(false)}
+      />
     </AppShell>
   );
 }

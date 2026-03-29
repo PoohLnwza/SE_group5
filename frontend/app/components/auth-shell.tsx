@@ -72,14 +72,6 @@ export function AuthShell({
           </Box>
 
           <Stack spacing={2.5} sx={{ mt: 5 }}>
-            <Paper sx={{ ...cardSx, background: 'rgba(250,247,239,0.62)' }}>
-              <Typography variant="subtitle2" color="text.secondary">
-                What is improved
-              </Typography>
-              <Typography variant="h5" sx={{ mt: 1 }}>
-                  รหัสทุก user ใช้ 111111.
-              </Typography>
-            </Paper>
             <Box
               sx={{
                 height: 220,

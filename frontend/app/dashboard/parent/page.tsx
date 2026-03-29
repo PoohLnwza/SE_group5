@@ -50,11 +50,31 @@ type Appointment = {
   } | null;
 };
 
+type Payment = {
+  payment_id: number;
+  status: string | null;
+  amount: number | null;
+  invoice: {
+    total_amount: number | null;
+    visit_id: number | null;
+  } | null;
+};
+
+type AssessmentResult = {
+  id: number;
+  submitted_at: string | null;
+  total_score: number | null;
+  assessment: { title: string | null } | null;
+  child: { first_name: string | null; last_name: string | null } | null;
+};
+
 export default function ParentDashboardPage() {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [latestAssessment, setLatestAssessment] = useState<AssessmentResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -65,14 +85,23 @@ export default function ParentDashboardPage() {
           { data: profileData },
           { data: scheduleData },
           { data: appointmentData },
+          { data: paymentData },
+          { data: assessmentData },
         ] = await Promise.all([
           api.get<Profile>("/auth/profile"),
           api.get<Schedule[]>("/appointments/schedules"),
           api.get<Appointment[]>("/appointments"),
+          api.get<Payment[]>("/payment/my-payments"),
+          api.get<AssessmentResult[]>("/assessment/results"),
         ]);
         setProfile(profileData);
         setSchedules(scheduleData);
         setAppointments(appointmentData);
+        setPayments(paymentData);
+        const sorted = [...assessmentData].sort((a, b) =>
+          (b.submitted_at ?? "").localeCompare(a.submitted_at ?? "")
+        );
+        setLatestAssessment(sorted[0] ?? null);
       } catch (err: any) {
         if (err?.response?.status === 401) {
           localStorage.removeItem("access_token");
@@ -91,6 +120,29 @@ export default function ParentDashboardPage() {
   }, [router]);
 
   const nextAvailable = schedules[0];
+  const unpaidPayments = useMemo(
+    () => payments.filter((p) => p.status === "pending"),
+    [payments],
+  );
+  const unpaidTotal = unpaidPayments.reduce(
+    (sum, p) => sum + (p.invoice?.total_amount ?? 0),
+    0,
+  );
+  const nextAppointment = useMemo(() => {
+    const today = new Date().toISOString().split("T")[0];
+    return appointments
+      .filter(
+        (a) =>
+          a.status !== "cancelled" &&
+          a.work_schedules?.work_date &&
+          a.work_schedules.work_date >= today,
+      )
+      .sort((a, b) =>
+        (a.work_schedules?.work_date ?? "").localeCompare(
+          b.work_schedules?.work_date ?? "",
+        ),
+      )[0] ?? null;
+  }, [appointments]);
   const activeAppointments = useMemo(
     () =>
       appointments.filter((appointment) => appointment.status !== "cancelled"),
@@ -303,44 +355,102 @@ export default function ParentDashboardPage() {
           <DashboardCard>
             <Typography variant="h5">Quick focus</Typography>
             <Stack spacing={1.75} sx={{ mt: 2.25 }}>
+              {/* Next appointment */}
               <Box
+                onClick={() => router.push("/appointments/parent/history")}
                 sx={{
                   p: 2,
                   borderRadius: 5,
+                  cursor: "pointer",
                   background:
                     "linear-gradient(135deg, rgba(250,247,239,0.72) 0%, rgba(221, 232, 207, 0.74) 100%)",
+                  "&:hover": { opacity: 0.85 },
                 }}
               >
-                <Typography sx={{ fontWeight: 700 }}>Booking</Typography>
-                <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Keep the next open slot visible so parents can book with fewer steps.
-                </Typography>
+                <Typography sx={{ fontWeight: 700 }}>นัดหมายถัดไป</Typography>
+                {nextAppointment ? (
+                  <>
+                    <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                      {nextAppointment.child?.first_name}{" "}
+                      {nextAppointment.child?.last_name} —{" "}
+                      {formatDate(nextAppointment.work_schedules?.work_date ?? null)}{" "}
+                      {formatTime(nextAppointment.work_schedules?.start_time ?? null)}
+                    </Typography>
+                    <Chip
+                      label={titleCase(nextAppointment.status)}
+                      size="small"
+                      sx={{ mt: 1 }}
+                    />
+                  </>
+                ) : (
+                  <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                    ยังไม่มีนัดหมายที่กำลังจะมาถึง
+                  </Typography>
+                )}
               </Box>
+
+              {/* Unpaid invoices */}
               <Box
+                onClick={() => router.push("/payment/parent")}
                 sx={{
                   p: 2,
                   borderRadius: 5,
+                  cursor: "pointer",
                   background:
-                    "linear-gradient(135deg, rgba(250,247,239,0.72) 0%, rgba(239, 231, 204, 0.76) 100%)",
+                    unpaidPayments.length > 0
+                      ? "linear-gradient(135deg, rgba(250,247,239,0.72) 0%, rgba(239, 220, 204, 0.76) 100%)"
+                      : "linear-gradient(135deg, rgba(250,247,239,0.72) 0%, rgba(221, 232, 207, 0.74) 100%)",
+                  "&:hover": { opacity: 0.85 },
                 }}
               >
-                <Typography sx={{ fontWeight: 700 }}>Assessments</Typography>
-                <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Keep child assessments one click away from the dashboard.
-                </Typography>
+                <Typography sx={{ fontWeight: 700 }}>ค่าบริการค้างชำระ</Typography>
+                {unpaidPayments.length > 0 ? (
+                  <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                    {unpaidPayments.length} รายการ — รวม{" "}
+                    {unpaidTotal.toLocaleString("th-TH", {
+                      style: "currency",
+                      currency: "THB",
+                    })}
+                  </Typography>
+                ) : (
+                  <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                    ไม่มียอดค้างชำระ
+                  </Typography>
+                )}
               </Box>
+
+              {/* Latest assessment */}
               <Box
+                onClick={() => router.push("/assessments/parent")}
                 sx={{
                   p: 2,
                   borderRadius: 5,
+                  cursor: "pointer",
                   background:
                     "linear-gradient(135deg, rgba(250,247,239,0.72) 0%, rgba(228, 235, 210, 0.78) 100%)",
+                  "&:hover": { opacity: 0.85 },
                 }}
               >
-                <Typography sx={{ fontWeight: 700 }}>History</Typography>
-                <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                  Surface the most recent family activity without crowding the page.
-                </Typography>
+                <Typography sx={{ fontWeight: 700 }}>แบบประเมินล่าสุด</Typography>
+                {latestAssessment ? (
+                  <>
+                    <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                      {latestAssessment.assessment?.title} —{" "}
+                      {latestAssessment.child?.first_name}{" "}
+                      {latestAssessment.child?.last_name}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ mt: 0.25, fontSize: "0.85rem" }}>
+                      คะแนน {latestAssessment.total_score ?? "-"} •{" "}
+                      {latestAssessment.submitted_at
+                        ? formatDate(latestAssessment.submitted_at)
+                        : "-"}
+                    </Typography>
+                  </>
+                ) : (
+                  <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+                    ยังไม่มีผลการประเมิน
+                  </Typography>
+                )}
               </Box>
             </Stack>
           </DashboardCard>

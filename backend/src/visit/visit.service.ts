@@ -165,7 +165,7 @@ export class VisitService {
       }
 
       return this.serializeVisit(createdVisit);
-    });
+    }, { timeout: 30000 });
   }
 
   async updateVisit(user: AuthUser, visitId: number, dto: UpdateVisitDto) {
@@ -261,7 +261,7 @@ export class VisitService {
       }
 
       return this.serializeVisit(updatedVisit);
-    });
+    }, { timeout: 30000 });
   }
 
   private async buildVisitWhere(user: AuthUser, filters: VisitFilters) {
