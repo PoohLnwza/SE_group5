@@ -20,6 +20,6 @@ async function bootstrap() {
     credentials: true,
   });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
-  await app.listen(process.env.PORT ?? 5001);
+  await app.listen(process.env.PORT ?? 5001, '0.0.0.0');
 }
 bootstrap();
